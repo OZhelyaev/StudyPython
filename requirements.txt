@@ -1,0 +1,24 @@
+# Data Analysis
+pandas
+numpy
+
+# Visualization
+matplotlib
+
+# Machine Learning
+scikit-learn
+
+# Jupyter / Notebooks
+jupyter
+notebook
+
+# Optional Utilities
+seaborn
+scipy
+
+# API / Web (future projects)
+flask
+fastapi
+
+# HTTP Requests
+requests
