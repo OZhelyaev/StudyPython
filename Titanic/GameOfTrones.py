@@ -22,6 +22,8 @@ from sklearn.metrics import mean_squared_error
 from sklearn.metrics import r2_score, mean_absolute_error
 from sklearn.metrics import accuracy_score
 from math import sqrt
+# сохраняем модель
+import pickle as pkl
 
 data = pd.read_csv('../data/game_of_thrones_train.csv', index_col='S.No')
 # print(data.head())
