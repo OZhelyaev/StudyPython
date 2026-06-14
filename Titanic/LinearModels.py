@@ -4,17 +4,18 @@ import scipy.linalg as sla
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import plotly.io as pio
+from sklearn.datasets import make_blobs
+from matplotlib.colors import ListedColormap
 
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from MyLogisticRegression import MyLogisticRegression
+from MyElasticLogisticRegression import MyElasticLogisticRegression
 
-
-from sklearn import datasets
-from sklearn.linear_model import LinearRegression, Lasso, Ridge
-
-from Titanic.MyElasticLogisticRegression import MyElasticLogisticRegression
+from sklearn.model_selection import cross_val_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def f(r):
@@ -215,3 +216,82 @@ preds = np.array([.55, .22, .85])
 me.w = np.array([1,1,1,1])
 grads = me.get_grad(X, y, preds)
 assert np.allclose(grads, np.array([-0.38,  0.82, -2.6 , -0.33])), "Что-то не так!"
+
+np.random.seed(42)
+m2 = MyElasticLogisticRegression(.2, .2)
+X = np.random.rand(100,3)
+X = np.concatenate((np.ones((X.shape[0], 1)), X), axis=1)
+y = np.random.randint(0, 1, size=(100,))
+preds = np.random.rand(100)
+m2.w = np.array([1,1,1,1])
+grads = m2.get_grad(X, y, preds)
+assert np.allclose(grads, np.array([49.11489408, 24.4698149, 25.87049356, 25.0139452])), "Что-то не так!"
+
+
+X, y = make_blobs(n_samples=1000, centers=[[-2,0.5],[3,-0.5]], cluster_std=1, random_state=42)
+
+colors = ("red", "green")
+colored_y = np.zeros(y.size, dtype=str)
+
+for i, cl in enumerate([0,1]):
+    colored_y[y.ravel() == cl] = str(colors[i])
+
+plt.figure(figsize=(15,10))
+plt.scatter(X[:, 0], X[:, 1], c=colored_y)
+#plt.grid()
+#plt.show()
+
+clf = MyElasticLogisticRegression(0.1, 0.1)
+clf.fit(X, y, epochs=1000)
+w = clf.get_weights()
+
+plt.figure(figsize=(15,8))
+
+eps = 0.1
+xx, yy = np.meshgrid(np.linspace(np.min(X[:,0]) - eps, np.max(X[:,0]) + eps, 200),
+                     np.linspace(np.min(X[:,1]) - eps, np.max(X[:,1]) + eps, 200))
+Z = clf.predict(np.c_[xx.ravel(), yy.ravel()])
+Z = Z.reshape(xx.shape)
+cmap_light = ListedColormap(['#FFAAAA', '#AAFFAA'])
+plt.pcolormesh(xx, yy, Z, cmap=cmap_light)
+plt.scatter(X[:, 0], X[:, 1], c=colored_y)
+# plt.show()
+
+#Теперь протестируем на датасете MNIST. Это очень простой класcический датасет, на котором часто тестируются модели.
+# С помощью нейронных сетей люди научились получать на нем качество 99.84%.
+print("------------------- MNIST -------------------------------------")
+data = pd.read_csv('../data/train.csv')
+print(data.head())
+X = data.iloc[:, 1:]
+y = data.iloc[:, 0]
+
+# Выберем только картинки, где изображен 0 и 1
+X = X[(y == 0) | (y == 1)]
+y = y[(y == 0) | (y == 1)]
+
+
+model = MyElasticLogisticRegression(0.2, 0.2)
+model.fit(X, y)
+preds = model.predict(X)
+print("TEST ------------------ ", preds[:10])
+
+
+pipeline = make_pipeline(
+    StandardScaler(),
+    MyElasticLogisticRegression(
+        l1_coef=0.02,
+        l2_coef=0.02
+    )
+)
+# взрываемся на весах Fit иногда не проходит. исправление приводит к поломке всего задания выше
+# sklearn.exceptions.NotFittedError: This Pipeline instance is not fitted yet. Call 'fit' with appropriate arguments before using this estimator.
+scores = cross_val_score(
+    pipeline,
+    X,
+    y,
+    cv=5,
+    scoring='accuracy'
+)
+
+mean_accuracy = scores.mean()
+print(f"Mean accuracy of Logistic Regression for two classes is {mean_accuracy:.4f}")

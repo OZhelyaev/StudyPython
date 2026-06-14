@@ -1,10 +1,13 @@
 import numpy as np
-import MyLogisticRegression
+from MyLogisticRegression import MyLogisticRegression
+from sklearn.base import BaseEstimator, ClassifierMixin
 
-class MyElasticLogisticRegression(MyLogisticRegression):
+class MyElasticLogisticRegression(
+    MyLogisticRegression,
+    BaseEstimator,
+    ClassifierMixin):
 
     def __init__(self, l1_coef, l2_coef):
-        super().__init__()
         self.l1_coef = l1_coef
         self.l2_coef = l2_coef
         self.w = None
