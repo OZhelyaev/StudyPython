@@ -14,6 +14,9 @@ from MyLogisticRegression import MyLogisticRegression
 from sklearn import datasets
 from sklearn.linear_model import LinearRegression, Lasso, Ridge
 
+from Titanic.MyElasticLogisticRegression import MyElasticLogisticRegression
+
+
 def f(r):
     """
     :param r: np.array(np.float) вектор длины 2
@@ -202,3 +205,13 @@ y = np.random.randint(0, 1, size=(100,))
 preds = np.random.rand(100)
 grads = m.get_grad(X, y, preds)
 assert np.allclose(grads, np.array([23.8698149, 25.27049356, 24.4139452])), "Что-то не так!"
+
+print(" ----- MyElasticLogisticRegression test 1 ----------")
+me = MyElasticLogisticRegression(.2,.2)
+X = np.array([[1, 3, 4], [1, -5, 6], [-3, 5, 3]])
+X = np.concatenate((np.ones((X.shape[0], 1)), X), axis=1)
+y = np.array([1, 0, 1])
+preds = np.array([.55, .22, .85])
+me.w = np.array([1,1,1,1])
+grads = me.get_grad(X, y, preds)
+assert np.allclose(grads, np.array([-0.38,  0.82, -2.6 , -0.33])), "Что-то не так!"
