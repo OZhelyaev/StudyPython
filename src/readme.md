@@ -415,15 +415,21 @@ from sklearn.linear_model import LinearRegression
 # Типичный pipeline
 
 ```text
-Pandas
+Pandas - анализ данных 
 ↓
-Очистка данных
+Очистка данных - незначимые признаки, сильная корреляция между признаками
 ↓
-Matplotlib
+Matplotlib - визуальный анализ 
 ↓
-Визуализация
+Разделить данные: train_test_split(..., stratify=y)
 ↓
-Sklearn
+Обработать пропуски: fit на train → transform train и test
 ↓
-Обучение модели
+Закодировать категориальные признаки: fit на train → transform train и test
+↓
+Нормировать числовые признаки: fit на train → transform train и test
+↓
+Обучать модель только на train, оценивать — только на test
+↓
+Оценка 
 ```
