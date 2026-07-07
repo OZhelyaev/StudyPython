@@ -1,3 +1,5 @@
+import itertools
+
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
@@ -5,11 +7,12 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
+from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline, Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.preprocessing import LabelEncoder
 # метод разделения данных на train и test
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
 # методы для масштабирования
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
@@ -191,11 +194,91 @@ def column_transformation(num_cols, cat_cols:list):
     ])
     return num_cols, cat_cols, preprocessor
 
+
+def grid_search_catboost(X_tr, y_tr:pd.DataFrame):
+    cv = StratifiedKFold(n_splits=7, shuffle=True, random_state=42)
+    # Лучшие параметры: {'depth': 3, 'learning_rate': 0.05, 'iterations': 300}, ROC-AUC = 0.8534
+    param_combinations = list(itertools.product(
+        # 'depth':
+        #[3, 5, 6],
+        [3],
+        # 'learning_rate':
+        #[0.01, 0.03, 0.05],
+        [0.05],
+        # 'iterations':
+        # [130, 200, 300]
+        [300]
+    ))
+
+    best_score = -1
+    best_params = None
+
+    for depth, learning_rate, iterations in param_combinations:
+        fold_scores = []
+        for train_idx, val_idx in cv.split(X_tr, y_tr):
+            X_fold_train, X_fold_val = X_tr.iloc[train_idx], X_tr.iloc[val_idx]
+            y_fold_train, y_fold_val = y_tr.iloc[train_idx], y_tr.iloc[val_idx]
+
+            model = CatBoostClassifier(
+                cat_features=cat_cols,
+                loss_function='Logloss',
+                eval_metric='AUC',
+                auto_class_weights='Balanced',
+                depth=depth,
+                learning_rate=learning_rate,
+                iterations=iterations,
+                random_state=47,
+                verbose=False,
+                early_stopping_rounds=50
+            )
+            model.fit(X_fold_train, y_fold_train)
+            proba = model.predict_proba(X_fold_val)[:, 1]
+            fold_scores.append(roc_auc_score(y_fold_val, proba))
+
+        mean_score = np.mean(fold_scores)
+        print(f"depth={depth}, lr={learning_rate}, iterations={iterations} -> ROC-AUC = {mean_score:.4f}")
+
+        if mean_score > best_score:
+            best_score = mean_score
+            best_params = {'depth': depth, 'learning_rate': learning_rate, 'iterations': iterations}
+
+    print(f"\nЛучшие параметры: {best_params}, ROC-AUC = {best_score:.4f}")
+    # обучаем модель на лучших параметрах
+    final_catboost = CatBoostClassifier(
+        cat_features=cat_cols,
+        auto_class_weights='Balanced',
+        loss_function='Logloss',
+        eval_metric='AUC',
+        random_state=47,
+        verbose=False,
+        **best_params  # depth, learning_rate, iterations из лучшей комбинации
+    )
+    final_catboost.fit(X_tr, y_tr)
+    final_catboost.save_model('../model/kaggle_catboost_churn_model.cbm')
+    return final_catboost
+
+
+#  прогон модели на тестовых данных
+def model_kaggle_test():
+    # Шаг 3. Предсказание на тестовых данных
+    X_test = pd.read_csv('../data/kaggle_test.csv')
+
+    # !!!!! необходимо удалить незначимые столбцы ....
+
+    # загрузи модель
+    model = CatBoostClassifier()
+    model.load_model('../model/kaggle_catboost_churn_model.cbm')
+
+    pred_test = model.predict(X_test)
+    print(' X_test CatBoostClassifier result: ', pred_test)
+    return pd.Series(pred_test)
+
 # сохраним результат в submissions.csv
 def save_result(df):
     submission = pd.read_csv('../data/kaggle_submission.csv')
     submission['Churn'] = df
     submission.to_csv('../data/new_kaggle_submission.csv', index=False)
+
 
 
 if __name__ == '__main__':
@@ -227,41 +310,17 @@ if __name__ == '__main__':
         'HistGradientBoosting': HistGradientBoostingClassifier(random_state=42),
         'SVC': SVC(class_weight='balanced', random_state=42)
     }
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv = StratifiedKFold(n_splits=7, shuffle=True, random_state=42)
 
     for name, clf in models.items():
         pipeline = make_pipeline(preprocessor, clf)
         scores = cross_val_score(pipeline, X_tr, y_tr, cv=cv, scoring='roc_auc')
-        pipeline.fit(X_tr, y_tr)  # обучаем отдельно, ТОЛЬКО чтобы посмотреть classes_
         print(f"{name}: roc_auc = {scores.mean():.4f} (+/- {scores.std():.4f})")
 
-    pool = Pool(X_tr, y_tr, cat_features=cat_cols)
+    # проверяем catboost
+    final_catboost = grid_search_catboost(X_tr, y_tr)
+    y_pred_proba = final_catboost.predict_proba(X_test)[:, 1]
+    print(f"Финальный Test ROC-AUC: {roc_auc_score(y_test, y_pred_proba):.4f}")
+    # фиксируем результаты в файле
+    save_result(model_kaggle_test())
 
-    params = {
-        'loss_function': 'Logloss',
-        'eval_metric': 'AUC',
-        'auto_class_weights': 'Balanced',
-        'iterations': 50,
-        'learning_rate': 0.01,
-        'depth': 6,
-        'random_state': 47,
-        'verbose': False
-    }
-
-    cv_results = catboost_cv(pool, params, fold_count=5, stratified=True, shuffle=True, seed=42)
-    print(cv_results.tail())  # последняя строка - метрики после всех итераций
-    print(f"Mean test AUC: {cv_results['test-AUC-mean'].iloc[-1]:.4f}")
-#    pipeline = make_pipeline(
-#        preprocessor,
-#        LogisticRegression() #CV(use_legacy_attributes=True)
-#    )
-
-#    scores = cross_val_score(
-#        pipeline,
-#        X_tr,
-#        y_tr,
-#        cv=cv,
-#        scoring='roc_auc'
-#    )
-#    mean_accuracy = scores.mean()
-#    print(f"Mean accuracy of Logistic Regression CV for two classes is {mean_accuracy:.4f}")
