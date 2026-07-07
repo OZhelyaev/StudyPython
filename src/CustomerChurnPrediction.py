@@ -153,11 +153,21 @@ def merge_no_internet_service(data: pd.DataFrame):
     for col in service_cols:
         data[col] = data[col].replace('No internet service', 'No')
 
-
-def drop_insignificant_signs(data: pd.DataFrame, ins_cols:list):
+# удалим из DataSet незначимые признаки
+def drop_insignificant_signs(data: pd.DataFrame, num_cols, cat_cols:list):
+    # удаляем незначимые признаки Sex, HasPhoneService, HasMultiplePhoneNumbers, HasOnlineTV, HasMovieSubscription
+    #  TotalSpent сильно коррелирует с ClientPeriod и MonthlySpending. Исключить!
+    insignificant_cols = [
+        'Sex', 'HasPhoneService', 'HasMultiplePhoneNumbers', 'HasOnlineTV', 'HasMovieSubscription', 'TotalSpent'
+    ]
     print(data.info())
-    data.drop(columns=ins_cols, inplace=True)
+    # удаляем из DataSet незначимые признаки
+    data.drop(columns=insignificant_cols, inplace=True)
+    # удалим незначимые столбцы из массивов наименований колонок
+    num_cols.remove('TotalSpent')
+    cat_cols = [col for col in cat_cols if col not in insignificant_cols]
     print(data.info())
+    return num_cols, cat_cols
 
 def split_data(data: pd.DataFrame):
     x = data.drop(columns=['Churn'])  # только значения без данных об оттоке
@@ -169,11 +179,6 @@ def split_data(data: pd.DataFrame):
 # нормируем числовые признаки, а категориальные закодируйте с помощью one-hot-encoding'а.
 # возвращаем препроцессор: к каждой группе колонок - своё преобразование
 def column_transformation(num_cols, cat_cols:list):
-
-    # удалим незначимые столбцы
-    insignificant_cols = ['Sex', 'HasPhoneService', 'HasMultiplePhoneNumbers', 'HasOnlineTV', 'HasMovieSubscription']
-    num_cols.remove('TotalSpent')
-    cat_cols = [col for col in cat_cols if col not in insignificant_cols]
     # обработаем признаки, сначала обработаем NaN через SimpleImputer, а затем уже значения
     num_pipeline = Pipeline([
         ('imputer', SimpleImputer(strategy='median')),
@@ -185,11 +190,65 @@ def column_transformation(num_cols, cat_cols:list):
         ('encoder', OneHotEncoder(handle_unknown='ignore', drop='if_binary'))
     ])
 
-    preprocessor = ColumnTransformer([
+    ct = ColumnTransformer([
         ('num', num_pipeline, num_cols),
         ('cat', cat_pipeline, cat_cols)
     ])
-    return num_cols, cat_cols, preprocessor
+    return ct
+
+# тестируем 4 модели
+# результата теста
+# LogisticRegression: roc_auc = 0.8456(+ / - 0.0058)
+# RandomForest: roc_auc = 0.8145(+ / - 0.0059)
+# HistGradientBoosting: roc_auc = 0.8244(+ / - 0.0064)
+# SVC: roc_auc = 0.8274(+ / - 0.0098)
+#
+# если бы не удаляем из выборки незначимые столбцы, то результат улучшается на 1.3%
+# LogisticRegression: roc_auc = 0.8469 (+/- 0.0067)
+# RandomForest: roc_auc = 0.8274 (+/- 0.0088)
+# HistGradientBoosting: roc_auc = 0.8307 (+/- 0.0083)
+# SVC: roc_auc = 0.8311 (+/- 0.0090)
+
+# LogisticRegression: roc_auc = 0.8483 (+/- 0.0078) - если не схлопывать No interner service
+def four_models_test(X_tr, y_tr:pd.DataFrame):
+    # препроцессор: к каждой группе колонок - своё преобразование
+    # нормируем числовые признаки, а категориальные закодируйте с помощью one-hot-encoding'а.
+    preprocessor = column_transformation(num_cols, cat_cols)
+    models = {
+        'LogisticRegression': LogisticRegressionCV(),
+        'RandomForest': RandomForestClassifier(n_estimators=200, class_weight='balanced', random_state=42),
+        'HistGradientBoosting': HistGradientBoostingClassifier(random_state=42),
+        'SVC': SVC(class_weight='balanced', random_state=42)
+    }
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    for name, clf in models.items():
+        pipeline = make_pipeline(preprocessor, clf)
+        scores = cross_val_score(pipeline, X_tr, y_tr, cv=cv, scoring='roc_auc')
+        print(f"{name}: roc_auc = {scores.mean():.4f} (+/- {scores.std():.4f})")
+
+# тестируем catboost
+# Mean test AUC: 0.8510
+# если бы не удаляем из выборки незначимые столбцы, то результат улучшается на 0.4%
+# Mean test AUC: 0.8514
+# Mean test AUC: 0.8520 - если не схлопывать No internet service 
+def catboost_model_test(X_tr, y_tr:pd.DataFrame, cat_cols:list):
+    pool = Pool(X_tr, y_tr, cat_features=cat_cols)
+
+    params = {
+        'loss_function': 'Logloss',
+        'eval_metric': 'AUC',
+        'auto_class_weights': 'Balanced',  # AUC: 0.8404; Balanced Mean test AUC: 0.8417
+        'iterations': 130,  # 130 - AUC: 0.8502; 200 - AUC: 0.8494
+        'learning_rate': 0.06,  # 0.07 - AUC: 0.8466
+        'depth': 5,  # 3 -AUC: 0.8455 5- AUC: 0.8491
+        'random_state': 47,
+        'verbose': False
+    }
+
+    cv_results = catboost_cv(pool, params, fold_count=7, stratified=True, shuffle=True, seed=47)
+    print(cv_results.tail())  # последняя строка - метрики после всех итераций
+    print(f"Mean test AUC: {cv_results['test-AUC-mean'].iloc[-1]:.4f}")
 
 # сохраним результат в submissions.csv
 def save_result(df):
@@ -202,66 +261,21 @@ if __name__ == '__main__':
     data = load_data()
     train_info(data)
     total_spent_to_float(data)
+    # проведем визуальный анализ данных
     #for num_col in num_cols:
     #    boxplot_for_num_col(data, num_col)
     #subplot_cat_columns(data)
     target_distribution(data)
     target_distribution_on_plot(data)
     # схлопним признак No internet service
-    merge_no_internet_service(data)
-    # удалим из DataSet незначимые признаки Sex, HasPhoneService, HasMultiplePhoneNumbers, HasOnlineTV, HasMovieSubscription
-    #  TotalSpent сильно коррелирует с ClientPeriod и MonthlySpending. Исключить!
-    insignificant_cols = [
-        'Sex', 'HasPhoneService', 'HasMultiplePhoneNumbers', 'HasOnlineTV', 'HasMovieSubscription', 'TotalSpent'
-    ]
-    drop_insignificant_signs(data, insignificant_cols)
+   # merge_no_internet_service(data)
+    # удалим из DataSet незначимые признаки
+   # num_cols, cat_cols = drop_insignificant_signs(data, num_cols, cat_cols)
     # разделим данные на train и test
     X_tr, X_test, y_tr, y_test = split_data(data)
-    # препроцессор: к каждой группе колонок - своё преобразование
-    # нормируем числовые признаки, а категориальные закодируйте с помощью one-hot-encoding'а.
-    num_cols, cat_cols, preprocessor = column_transformation(num_cols, cat_cols)
+    # тестируем 4 модели
+    four_models_test(X_tr, y_tr)
+    # тестируем catboost
+    catboost_model_test(X_tr, y_tr, cat_cols)
 
-    models = {
-        'LogisticRegression': LogisticRegressionCV(),
-        'RandomForest': RandomForestClassifier(n_estimators=200, class_weight='balanced', random_state=42),
-        'HistGradientBoosting': HistGradientBoostingClassifier(random_state=42),
-        'SVC': SVC(class_weight='balanced', random_state=42)
-    }
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-    for name, clf in models.items():
-        pipeline = make_pipeline(preprocessor, clf)
-        scores = cross_val_score(pipeline, X_tr, y_tr, cv=cv, scoring='roc_auc')
-        pipeline.fit(X_tr, y_tr)  # обучаем отдельно, ТОЛЬКО чтобы посмотреть classes_
-        print(f"{name}: roc_auc = {scores.mean():.4f} (+/- {scores.std():.4f})")
-
-    pool = Pool(X_tr, y_tr, cat_features=cat_cols)
-
-    params = {
-        'loss_function': 'Logloss',
-        'eval_metric': 'AUC',
-        'auto_class_weights': 'Balanced',
-        'iterations': 50,
-        'learning_rate': 0.01,
-        'depth': 6,
-        'random_state': 47,
-        'verbose': False
-    }
-
-    cv_results = catboost_cv(pool, params, fold_count=5, stratified=True, shuffle=True, seed=42)
-    print(cv_results.tail())  # последняя строка - метрики после всех итераций
-    print(f"Mean test AUC: {cv_results['test-AUC-mean'].iloc[-1]:.4f}")
-#    pipeline = make_pipeline(
-#        preprocessor,
-#        LogisticRegression() #CV(use_legacy_attributes=True)
-#    )
-
-#    scores = cross_val_score(
-#        pipeline,
-#        X_tr,
-#        y_tr,
-#        cv=cv,
-#        scoring='roc_auc'
-#    )
-#    mean_accuracy = scores.mean()
-#    print(f"Mean accuracy of Logistic Regression CV for two classes is {mean_accuracy:.4f}")
