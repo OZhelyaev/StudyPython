@@ -1,3 +1,5 @@
+import itertools
+
 import pandas as pd
 import numpy as np
 from matplotlib import pyplot as plt
@@ -5,11 +7,12 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
+from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import make_pipeline, Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.preprocessing import LabelEncoder
 # метод разделения данных на train и test
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
 # методы для масштабирования
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import cross_val_score
@@ -196,6 +199,69 @@ def column_transformation(num_cols, cat_cols:list):
     ])
     return ct
 
+
+def grid_search_catboost(X_tr, y_tr:pd.DataFrame):
+    cv = StratifiedKFold(n_splits=7, shuffle=True, random_state=42)
+    # Лучшие параметры: {'depth': 3, 'learning_rate': 0.05, 'iterations': 300}, ROC-AUC = 0.8534
+    param_combinations = list(itertools.product(
+        # 'depth':
+        [3, 5, 6],
+        #[3],
+        # 'learning_rate':
+        [0.01, 0.03, 0.05],
+        #[0.05],
+        # 'iterations':
+        [130, 200, 300]
+        #[300]
+    ))
+
+    best_score = -1
+    best_params = None
+
+    for depth, learning_rate, iterations in param_combinations:
+        fold_scores = []
+        for train_idx, val_idx in cv.split(X_tr, y_tr):
+            X_fold_train, X_fold_val = X_tr.iloc[train_idx], X_tr.iloc[val_idx]
+            y_fold_train, y_fold_val = y_tr.iloc[train_idx], y_tr.iloc[val_idx]
+
+            model = CatBoostClassifier(
+                cat_features=cat_cols,
+                loss_function='Logloss',
+                eval_metric='AUC',
+                auto_class_weights='Balanced',
+                depth=depth,
+                learning_rate=learning_rate,
+                iterations=iterations,
+                random_state=47,
+                verbose=False,
+                early_stopping_rounds=50
+            )
+            model.fit(X_fold_train, y_fold_train)
+            proba = model.predict_proba(X_fold_val)[:, 1]
+            fold_scores.append(roc_auc_score(y_fold_val, proba))
+
+        mean_score = np.mean(fold_scores)
+        print(f"depth={depth}, lr={learning_rate}, iterations={iterations} -> ROC-AUC = {mean_score:.4f}")
+
+        if mean_score > best_score:
+            best_score = mean_score
+            best_params = {'depth': depth, 'learning_rate': learning_rate, 'iterations': iterations}
+
+    print(f"\nЛучшие параметры: {best_params}, ROC-AUC = {best_score:.4f}")
+    # обучаем модель на лучших параметрах
+    final_catboost = CatBoostClassifier(
+        cat_features=cat_cols,
+        auto_class_weights='Balanced',
+        loss_function='Logloss',
+        eval_metric='AUC',
+        random_state=47,
+        verbose=False,
+        **best_params  # depth, learning_rate, iterations из лучшей комбинации
+    )
+    final_catboost.fit(X_tr, y_tr)
+    final_catboost.save_model('../model/kaggle_catboost_churn_model.cbm')
+    return final_catboost
+
 # тестируем 4 модели
 # результата теста
 # LogisticRegression: roc_auc = 0.8456(+ / - 0.0058)
@@ -208,7 +274,6 @@ def column_transformation(num_cols, cat_cols:list):
 # RandomForest: roc_auc = 0.8274 (+/- 0.0088)
 # HistGradientBoosting: roc_auc = 0.8307 (+/- 0.0083)
 # SVC: roc_auc = 0.8311 (+/- 0.0090)
-
 # LogisticRegression: roc_auc = 0.8483 (+/- 0.0078) - если не схлопывать No interner service
 def four_models_test(X_tr, y_tr:pd.DataFrame):
     # препроцессор: к каждой группе колонок - своё преобразование
@@ -227,28 +292,28 @@ def four_models_test(X_tr, y_tr:pd.DataFrame):
         scores = cross_val_score(pipeline, X_tr, y_tr, cv=cv, scoring='roc_auc')
         print(f"{name}: roc_auc = {scores.mean():.4f} (+/- {scores.std():.4f})")
 
-# тестируем catboost
-# Mean test AUC: 0.8510
-# если бы не удаляем из выборки незначимые столбцы, то результат улучшается на 0.4%
-# Mean test AUC: 0.8514
-# Mean test AUC: 0.8520 - если не схлопывать No internet service 
-def catboost_model_test(X_tr, y_tr:pd.DataFrame, cat_cols:list):
-    pool = Pool(X_tr, y_tr, cat_features=cat_cols)
+    # нужно вернуть лучшую модель по результатам теста 
+    lr:LogisticRegressionCV
+    lr = models.pop('LogisticRegression')
+    pipeline = make_pipeline(preprocessor, lr)
+    pipeline.fit(X_tr, y_tr)
+    return lr
 
-    params = {
-        'loss_function': 'Logloss',
-        'eval_metric': 'AUC',
-        'auto_class_weights': 'Balanced',  # AUC: 0.8404; Balanced Mean test AUC: 0.8417
-        'iterations': 130,  # 130 - AUC: 0.8502; 200 - AUC: 0.8494
-        'learning_rate': 0.06,  # 0.07 - AUC: 0.8466
-        'depth': 5,  # 3 -AUC: 0.8455 5- AUC: 0.8491
-        'random_state': 47,
-        'verbose': False
-    }
 
-    cv_results = catboost_cv(pool, params, fold_count=7, stratified=True, shuffle=True, seed=47)
-    print(cv_results.tail())  # последняя строка - метрики после всех итераций
-    print(f"Mean test AUC: {cv_results['test-AUC-mean'].iloc[-1]:.4f}")
+#  прогон модели на тестовых данных
+def model_kaggle_test():
+    # Шаг 3. Предсказание на тестовых данных
+    X_test = pd.read_csv('../data/kaggle_test.csv')
+
+    # !!!!! необходимо удалить незначимые столбцы ....
+
+    # загрузи модель
+    model = CatBoostClassifier()
+    model.load_model('../model/kaggle_catboost_churn_model.cbm')
+
+    pred_test = model.predict(X_test)
+    print(' X_test CatBoostClassifier result: ', pred_test)
+    return pd.Series(pred_test)
 
 # сохраним результат в submissions.csv
 def save_result(df):
@@ -261,21 +326,34 @@ if __name__ == '__main__':
     data = load_data()
     train_info(data)
     total_spent_to_float(data)
-    # проведем визуальный анализ данных
     #for num_col in num_cols:
     #    boxplot_for_num_col(data, num_col)
     #subplot_cat_columns(data)
     target_distribution(data)
     target_distribution_on_plot(data)
     # схлопним признак No internet service
-   # merge_no_internet_service(data)
+    # merge_no_internet_service(data)
     # удалим из DataSet незначимые признаки
-   # num_cols, cat_cols = drop_insignificant_signs(data, num_cols, cat_cols)
+    # num_cols, cat_cols = drop_insignificant_signs(data, num_cols, cat_cols)
     # разделим данные на train и test
     X_tr, X_test, y_tr, y_test = split_data(data)
+    # препроцессор: к каждой группе колонок - своё преобразование
+    # нормируем числовые признаки, а категориальные закодируйте с помощью one-hot-encoding'а.
     # тестируем 4 модели
-    four_models_test(X_tr, y_tr)
-    # тестируем catboost
-    catboost_model_test(X_tr, y_tr, cat_cols)
 
+    best_model = four_models_test(X_tr, y_tr)
+    # попытка предсказать на тестовой выборке и посчитать roc_auc -
+    # sklearn.exceptions.NotFittedError: This Pipeline instance is not fitted yet.
+    preprocessor = column_transformation(num_cols, cat_cols)
+    pipeline = make_pipeline(preprocessor, best_model)
+    y_pred_proba = pipeline.predict_proba(X_test)[:, 1]
+    print(f"Финальный Test four models ROC-AUC: {roc_auc_score(y_test, y_pred_proba):.4f}")
+
+
+    # проверяем catboost
+  #  final_catboost = grid_search_catboost(X_tr, y_tr)
+  #  y_pred_proba = final_catboost.predict_proba(X_test)[:, 1]
+  #  print(f"Финальный Test ROC-AUC: {roc_auc_score(y_test, y_pred_proba):.4f}")
+    # фиксируем результаты в файле
+    save_result(model_kaggle_test())
 
